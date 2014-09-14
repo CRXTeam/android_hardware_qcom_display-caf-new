@@ -69,7 +69,8 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
 
     /* force 1MB alignment selectively for secure buffers, MDP5 onwards */
 #ifdef MDSS_TARGET
-    if (usage & GRALLOC_USAGE_PROTECTED) {
+    if ((usage & GRALLOC_USAGE_PROTECTED) &&
+        (usage & GRALLOC_USAGE_PRIVATE_MM_HEAP)) {
         data.align = ALIGN((int) data.align, SZ_1M);
         size = ALIGN(size, data.align);
     }
@@ -151,6 +152,10 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
             flags |= private_handle_t::PRIV_FLAGS_TILE_RENDERED;
         }
 
+        if(usage & (GRALLOC_USAGE_SW_READ_MASK | GRALLOC_USAGE_SW_WRITE_MASK)) {
+            flags |= private_handle_t::PRIV_FLAGS_CPU_RENDERED;
+        }
+
         flags |= data.allocType;
         uintptr_t eBaseAddr = (uintptr_t)(eData.base) + eData.offset;
         private_handle_t *hnd = new private_handle_t(data.fd, size, flags,
@@ -174,9 +179,6 @@ void gpu_context_t::getGrallocInformationFromFormat(int inputFormat,
                                                     int *bufferType)
 {
     *bufferType = BUFFER_TYPE_VIDEO;
-
-    if (inputFormat == HAL_PIXEL_FORMAT_RGB_888)
-        return;
 
     if (inputFormat <= HAL_PIXEL_FORMAT_sRGB_X_8888) {
         // RGB formats

@@ -73,6 +73,7 @@ MDPVersion::MDPVersion()
     mLowBw = 0;
     mHighBw = 0;
     mSourceSplit = false;
+    mSourceSplitAlways = false;
     mRGBHasNoScalar = false;
 
     updatePanelInfo();
@@ -167,7 +168,7 @@ void  MDPVersion::updatePanelInfo() {
                           mPanelInfo.mPartialUpdateEnable? "Enabled" :
                           "Disabled");
                 }
-                if(!strncmp(tokens[0], "xalign", strlen("xalign"))) {
+                if(!strncmp(tokens[0], "xstart", strlen("xstart"))) {
                     mPanelInfo.mLeftAlign = atoi(tokens[1]);
                     ALOGI("Left Align: %d", mPanelInfo.mLeftAlign);
                 }
@@ -182,6 +183,18 @@ void  MDPVersion::updatePanelInfo() {
                 if(!strncmp(tokens[0], "halign", strlen("halign"))) {
                     mPanelInfo.mHeightAlign = atoi(tokens[1]);
                     ALOGI("Height Align: %d", mPanelInfo.mHeightAlign);
+                }
+                if(!strncmp(tokens[0], "min_w", strlen("min_w"))) {
+                    mPanelInfo.mMinROIWidth = atoi(tokens[1]);
+                    ALOGI("Min ROI Width: %d", mPanelInfo.mMinROIWidth);
+                }
+                if(!strncmp(tokens[0], "min_h", strlen("min_h"))) {
+                    mPanelInfo.mMinROIHeight = atoi(tokens[1]);
+                    ALOGI("Min ROI Height: %d", mPanelInfo.mMinROIHeight);
+                }
+                if(!strncmp(tokens[0], "roi_merge", strlen("roi_merge"))) {
+                    mPanelInfo.mNeedsROIMerge = atoi(tokens[1]);
+                    ALOGI("Needs ROI Merge: %d", mPanelInfo.mNeedsROIMerge);
                 }
             }
         }
@@ -279,6 +292,30 @@ bool MDPVersion::updateSysFsInfo() {
         free(line);
         fclose(sysfsFd);
     }
+
+    if(mSourceSplit) {
+        memset(sysfsPath, 0, sizeof(sysfsPath));
+        snprintf(sysfsPath , sizeof(sysfsPath),
+                "/sys/class/graphics/fb0/msm_fb_src_split_info");
+
+        sysfsFd = fopen(sysfsPath, "rb");
+        if (sysfsFd == NULL) {
+            ALOGE("%s: Opening file %s failed with error %s", __FUNCTION__,
+                    sysfsPath, strerror(errno));
+            return false;
+        } else {
+            line = (char *) malloc(len);
+            if((read = getline(&line, &len, sysfsFd)) != -1) {
+                if(!strncmp(line, "src_split_always",
+                        strlen("src_split_always"))) {
+                    mSourceSplitAlways = true;
+                }
+            }
+            free(line);
+            fclose(sysfsFd);
+        }
+    }
+
     ALOGD_IF(DEBUG, "%s: mMDPVersion: %d mMdpRev: %x mRGBPipes:%d,"
                     "mVGPipes:%d", __FUNCTION__, mMDPVersion, mMdpRev,
                     mRGBPipes, mVGPipes);
@@ -342,6 +379,10 @@ bool MDPVersion::supportsMacroTile() {
 
 bool MDPVersion::isSrcSplit() const {
     return mSourceSplit;
+}
+
+bool MDPVersion::isSrcSplitAlways() const {
+    return mSourceSplitAlways;
 }
 
 bool MDPVersion::isRGBScalarSupported() const {

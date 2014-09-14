@@ -35,19 +35,17 @@
 using namespace qhwc;
 using namespace overlay;
 
-HWCVirtualBase* HWCVirtualBase::getObject() {
-    char property[PROPERTY_VALUE_MAX];
+HWCVirtualBase* HWCVirtualBase::getObject(bool isVDSEnabled) {
 
-    if((property_get("persist.hwc.enable_vds", property, NULL) > 0)) {
-        if(atoi(property) != 0) {
-            ALOGD_IF(HWCVIRTUAL_LOG, "%s: VDS is enabled for Virtual display",
-                __FUNCTION__);
-            return new HWCVirtualVDS();
-        }
+    if(isVDSEnabled) {
+        ALOGD_IF(HWCVIRTUAL_LOG, "%s: VDS is enabled for Virtual display",
+                 __FUNCTION__);
+        return new HWCVirtualVDS();
+    } else {
+        ALOGD_IF(HWCVIRTUAL_LOG, "%s: V4L2 is enabled for Virtual display",
+                 __FUNCTION__);
+        return new HWCVirtualV4L2();
     }
-    ALOGD_IF(HWCVIRTUAL_LOG, "%s: V4L2 is enabled for Virtual display",
-            __FUNCTION__);
-    return new HWCVirtualV4L2();
 }
 
 void HWCVirtualVDS::init(hwc_context_t *ctx) {
@@ -84,6 +82,9 @@ void HWCVirtualVDS::destroy(hwc_context_t *ctx, size_t /*numDisplays*/,
         if(!Writeback::getInstance()->setSecure(false)) {
             ALOGE("Failure while attempting to reset WB session.");
         }
+        ctx->mWfdSyncLock.lock();
+        ctx->mWfdSyncLock.signal();
+        ctx->mWfdSyncLock.unlock();
     }
 }
 
@@ -125,7 +126,11 @@ int HWCVirtualVDS::prepare(hwc_composer_device_1 *dev,
 
             if(ctx->mMDPComp[dpy]->prepare(ctx, list) < 0) {
                 const int fbZ = 0;
-                ctx->mFBUpdate[dpy]->prepareAndValidate(ctx, list, fbZ);
+                if(not ctx->mFBUpdate[dpy]->prepareAndValidate(ctx, list, fbZ))
+                {
+                    ctx->mOverlay->clear(dpy);
+                    ctx->mLayerRotMap[dpy]->clear();
+                }
             }
         } else {
             /* Virtual Display is in Pause state.
@@ -259,7 +264,11 @@ int HWCVirtualV4L2::prepare(hwc_composer_device_1 *dev,
             setListStats(ctx, list, dpy);
             if(ctx->mMDPComp[dpy]->prepare(ctx, list) < 0) {
                 const int fbZ = 0;
-                ctx->mFBUpdate[dpy]->prepareAndValidate(ctx, list, fbZ);
+                if(not ctx->mFBUpdate[dpy]->prepareAndValidate(ctx, list, fbZ))
+                {
+                    ctx->mOverlay->clear(dpy);
+                    ctx->mLayerRotMap[dpy]->clear();
+                }
             }
         } else {
             /* Virtual Display is in Pause state.

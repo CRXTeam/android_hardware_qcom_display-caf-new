@@ -30,6 +30,8 @@
 
 #include <cutils/log.h>
 
+#define COMPAT_GRALLOC_PERFORM
+
 #define ROUND_UP_PAGESIZE(x) ( (((unsigned long)(x)) + PAGE_SIZE-1)  & \
                                (~(PAGE_SIZE-1)) )
 
@@ -78,10 +80,16 @@ enum {
     // for those backward compatibility i.e., newer Display HAL + older graphics
     // libraries
     GRALLOC_MODULE_PERFORM_GET_STRIDE,
+#ifdef COMPAT_GRALLOC_PERFORM
+    GRALLOC_MODULE_PERFORM_GET_CUSTOM_STRIDE_AND_HEIGHT_FROM_HANDLE,
+    GRALLOC_MODULE_PERFORM_GET_CUSTOM_STRIDE_FROM_HANDLE,
+#else
     GRALLOC_MODULE_PERFORM_GET_CUSTOM_STRIDE_FROM_HANDLE,
     GRALLOC_MODULE_PERFORM_GET_CUSTOM_STRIDE_AND_HEIGHT_FROM_HANDLE,
+#endif
     GRALLOC_MODULE_PERFORM_GET_ATTRIBUTES,
     GRALLOC_MODULE_PERFORM_GET_COLOR_SPACE_FROM_HANDLE,
+    GRALLOC_MODULE_PERFORM_GET_YUV_PLANE_INFO,
 };
 
 #define GRALLOC_HEAP_MASK   (GRALLOC_USAGE_PRIVATE_UI_CONTIG_HEAP |\
@@ -201,7 +209,9 @@ struct private_handle_t : public native_handle {
             PRIV_FLAGS_ITU_R_709          = 0x00800000,
             PRIV_FLAGS_SECURE_DISPLAY     = 0x01000000,
             // Buffer is rendered in Tile Format
-            PRIV_FLAGS_TILE_RENDERED      = 0x02000000
+            PRIV_FLAGS_TILE_RENDERED      = 0x02000000,
+            // Buffer rendered using CPU/SW renderer
+            PRIV_FLAGS_CPU_RENDERED       = 0x04000000
         };
 
         // file-descriptors

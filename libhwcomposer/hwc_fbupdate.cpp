@@ -38,10 +38,9 @@ namespace qhwc {
 namespace ovutils = overlay::utils;
 
 IFBUpdate* IFBUpdate::getObject(hwc_context_t *ctx, const int& dpy) {
-    if(isDisplaySplit(ctx, dpy)) {
-        if(qdutils::MDPVersion::getInstance().isSrcSplit()) {
-            return new FBSrcSplit(ctx, dpy);
-        }
+    if(qdutils::MDPVersion::getInstance().isSrcSplit()) {
+        return new FBSrcSplit(ctx, dpy);
+    } else if(isDisplaySplit(ctx, dpy)) {
         return new FBUpdateSplit(ctx, dpy);
     }
     return new FBUpdateNonSplit(ctx, dpy);
@@ -49,8 +48,15 @@ IFBUpdate* IFBUpdate::getObject(hwc_context_t *ctx, const int& dpy) {
 
 IFBUpdate::IFBUpdate(hwc_context_t *ctx, const int& dpy) : mDpy(dpy) {
     size_t size = 0;
-    getBufferAttributes(ctx->dpyAttr[mDpy].xres,
-            ctx->dpyAttr[mDpy].yres,
+    uint32_t xres = ctx->dpyAttr[mDpy].xres;
+    uint32_t yres = ctx->dpyAttr[mDpy].yres;
+    if (ctx->dpyAttr[dpy].customFBSize) {
+        //GPU will render and compose at new resolution
+        //So need to have FB at new resolution
+        xres = ctx->dpyAttr[mDpy].xres_new;
+        yres = ctx->dpyAttr[mDpy].yres_new;
+    }
+    getBufferAttributes((int)xres, (int)yres,
             HAL_PIXEL_FORMAT_RGBA_8888,
             0,
             mAlignedFBWidth,
@@ -103,8 +109,7 @@ bool FBUpdateNonSplit::preRotateExtDisplay(hwc_context_t *ctx,
             mRot = NULL;
             return false;
         }
-        info.format = (mRot)->getDstFormat();
-        updateSource(orient, info, sourceCrop);
+        updateSource(orient, info, sourceCrop, mRot);
         rotFlags |= ovutils::ROT_PREROTATED;
     }
     return true;
@@ -139,14 +144,14 @@ bool FBUpdateNonSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *lis
                 ovutils::getMdpFormat(HAL_PIXEL_FORMAT_RGBA_8888,
                     mTileEnabled));
 
-        //Request a pipe
-        ovutils::eMdpPipeType type = ovutils::OV_MDP_PIPE_ANY;
-        if((qdutils::MDPVersion::getInstance().is8x26() ||
-                   qdutils::MDPVersion::getInstance().is8x16()) && mDpy) {
-            //For 8x26 external always use DMA pipe
-            type = ovutils::OV_MDP_PIPE_DMA;
-        }
-        ovutils::eDest dest = ov.nextPipe(type, mDpy, Overlay::MIXER_DEFAULT);
+        Overlay::PipeSpecs pipeSpecs;
+        pipeSpecs.formatClass = Overlay::FORMAT_RGB;
+        pipeSpecs.needsScaling = qhwc::needsScaling(layer);
+        pipeSpecs.dpy = mDpy;
+        pipeSpecs.mixer = Overlay::MIXER_DEFAULT;
+        pipeSpecs.fb = true;
+
+        ovutils::eDest dest = ov.getPipe(pipeSpecs);
         if(dest == ovutils::OV_INVALID) { //None available
             ALOGE("%s: No pipes available to configure fb for dpy %d",
                 __FUNCTION__, mDpy);
@@ -188,11 +193,9 @@ bool FBUpdateNonSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *lis
         // Dont do wormhole calculation when extDownscale is enabled on External
         if(ctx->listStats[mDpy].isDisplayAnimating && mDpy) {
             sourceCrop = layer->displayFrame;
-        } else if((!mDpy ||
-                  (mDpy && !extOrient
-                  && !ctx->dpyAttr[mDpy].mDownScaleMode))
-                  && (extOnlyLayerIndex == -1)) {
-            if(!qdutils::MDPVersion::getInstance().is8x26() &&
+        } else if((mDpy && !extOrient
+                  && !ctx->dpyAttr[mDpy].mDownScaleMode)) {
+            if(ctx->mOverlay->isUIScalingOnExternalSupported() &&
                 !ctx->dpyAttr[mDpy].customFBSize) {
                 getNonWormholeRegion(list, sourceCrop);
                 displayFrame = sourceCrop;
@@ -202,14 +205,12 @@ bool FBUpdateNonSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *lis
                                    transform, orient);
         //Store the displayFrame, will be used in getDisplayViewFrame
         ctx->dpyAttr[mDpy].mDstRect = displayFrame;
-        setMdpFlags(layer, mdpFlags, 0, transform);
+        setMdpFlags(ctx, layer, mdpFlags, 0, transform);
         // For External use rotator if there is a rotation value set
         ret = preRotateExtDisplay(ctx, layer, info,
                 sourceCrop, mdpFlags, rotFlags);
         if(!ret) {
             ALOGE("%s: preRotate for external Failed!", __FUNCTION__);
-            ctx->mOverlay->clear(mDpy);
-            ctx->mLayerRotMap[mDpy]->clear();
             return false;
         }
         //For the mdp, since either we are pre-rotating or MDP does flips
@@ -224,7 +225,6 @@ bool FBUpdateNonSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *lis
         if(configMdp(ctx->mOverlay, parg, orient, sourceCrop, displayFrame,
                     NULL, mDest) < 0) {
             ALOGE("%s: configMdp failed for dpy %d", __FUNCTION__, mDpy);
-            ctx->mLayerRotMap[mDpy]->clear();
             ret = false;
         }
     }
@@ -272,8 +272,8 @@ bool FBUpdateSplit::prepare(hwc_context_t *ctx, hwc_display_contents_1 *list,
                  __FUNCTION__);
         return false;
     }
-    ALOGD_IF(DEBUG_FBUPDATE, "%s, mModeOn = %d", __FUNCTION__, mModeOn);
     mModeOn = configure(ctx, list, fbUpdatingRect, fbZorder);
+    ALOGD_IF(DEBUG_FBUPDATE, "%s, mModeOn = %d", __FUNCTION__, mModeOn);
     return mModeOn;
 }
 
@@ -308,10 +308,16 @@ bool FBUpdateSplit::configure(hwc_context_t *ctx,
         hwc_rect_t displayFrame = fbUpdatingRect;
 
         ret = true;
+        Overlay::PipeSpecs pipeSpecs;
+        pipeSpecs.formatClass = Overlay::FORMAT_RGB;
+        pipeSpecs.needsScaling = qhwc::needsScaling(layer);
+        pipeSpecs.dpy = mDpy;
+        pipeSpecs.fb = true;
+
         /* Configure left pipe */
         if(displayFrame.left < lSplit) {
-            ovutils::eDest destL = ov.nextPipe(ovutils::OV_MDP_PIPE_ANY, mDpy,
-                                               Overlay::MIXER_LEFT);
+            pipeSpecs.mixer = Overlay::MIXER_LEFT;
+            ovutils::eDest destL = ov.getPipe(pipeSpecs);
             if(destL == ovutils::OV_INVALID) { //None available
                 ALOGE("%s: No pipes available to configure fb for dpy %d's left"
                       " mixer", __FUNCTION__, mDpy);
@@ -344,8 +350,8 @@ bool FBUpdateSplit::configure(hwc_context_t *ctx,
 
         /* Configure right pipe */
         if(displayFrame.right > lSplit) {
-            ovutils::eDest destR = ov.nextPipe(ovutils::OV_MDP_PIPE_ANY, mDpy,
-                                               Overlay::MIXER_RIGHT);
+            pipeSpecs.mixer = Overlay::MIXER_RIGHT;
+            ovutils::eDest destR = ov.getPipe(pipeSpecs);
             if(destR == ovutils::OV_INVALID) { //None available
                 ALOGE("%s: No pipes available to configure fb for dpy %d's"
                       " right mixer", __FUNCTION__, mDpy);
@@ -381,10 +387,6 @@ bool FBUpdateSplit::configure(hwc_context_t *ctx,
                 ret = false;
             }
         }
-
-        if(ret == false) {
-            ctx->mLayerRotMap[mDpy]->clear();
-        }
     }
     return ret;
 }
@@ -419,7 +421,6 @@ FBSrcSplit::FBSrcSplit(hwc_context_t *ctx, const int& dpy):
 
 bool FBSrcSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *list,
         hwc_rect_t fbUpdatingRect, int fbZorder) {
-    bool ret = false;
     hwc_layer_1_t *layer = &list->hwLayers[list->numHwLayers - 1];
     int extOnlyLayerIndex = ctx->listStats[mDpy].extOnlyLayerIndex;
     // ext only layer present..
@@ -455,8 +456,13 @@ bool FBSrcSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *list,
     hwc_rect_t cropR = fbUpdatingRect;
 
     //Request left pipe (or 1 by default)
-    ovutils::eDest destL = ov.nextPipe(ovutils::OV_MDP_PIPE_ANY, mDpy,
-            Overlay::MIXER_DEFAULT);
+    Overlay::PipeSpecs pipeSpecs;
+    pipeSpecs.formatClass = Overlay::FORMAT_RGB;
+    pipeSpecs.needsScaling = qhwc::needsScaling(layer);
+    pipeSpecs.dpy = mDpy;
+    pipeSpecs.mixer = Overlay::MIXER_DEFAULT;
+    pipeSpecs.fb = true;
+    ovutils::eDest destL = ov.getPipe(pipeSpecs);
     if(destL == ovutils::OV_INVALID) {
         ALOGE("%s: No pipes available to configure fb for dpy %d's left"
                 " mixer", __FUNCTION__, mDpy);
@@ -465,11 +471,19 @@ bool FBSrcSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *list,
 
     ovutils::eDest destR = ovutils::OV_INVALID;
 
-    //Request right pipe (2 pipes needed only if dim > 2048)
-    if((fbUpdatingRect.right - fbUpdatingRect.left) >
-            qdutils::MAX_DISPLAY_DIM) {
-        destR = ov.nextPipe(ovutils::OV_MDP_PIPE_ANY, mDpy,
-                Overlay::MIXER_DEFAULT);
+    /*  Use 2 pipes IF
+        a) FB's width is > 2048 or
+        b) On primary, driver has indicated with caps to split always. This is
+           based on an empirically derived value of panel height.
+    */
+
+    bool primarySplitAlways = (mDpy == HWC_DISPLAY_PRIMARY) and
+            qdutils::MDPVersion::getInstance().isSrcSplitAlways();
+
+    if(((fbUpdatingRect.right - fbUpdatingRect.left) >
+            qdutils::MAX_DISPLAY_DIM) or
+            primarySplitAlways) {
+        destR = ov.getPipe(pipeSpecs);
         if(destR == ovutils::OV_INVALID) {
             ALOGE("%s: No pipes available to configure fb for dpy %d's right"
                     " mixer", __FUNCTION__, mDpy);
@@ -492,7 +506,6 @@ bool FBSrcSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *list,
         if(configMdp(ctx->mOverlay, parg, orient,
                     cropL, cropL, NULL /*metadata*/, destL) < 0) {
             ALOGE("%s: commit failed for left mixer config", __FUNCTION__);
-            ctx->mLayerRotMap[mDpy]->clear();
             return false;
         }
     }
@@ -502,7 +515,6 @@ bool FBSrcSplit::configure(hwc_context_t *ctx, hwc_display_contents_1 *list,
         if(configMdp(ctx->mOverlay, parg, orient,
                     cropR, cropR, NULL /*metadata*/, destR) < 0) {
             ALOGE("%s: commit failed for right mixer config", __FUNCTION__);
-            ctx->mLayerRotMap[mDpy]->clear();
             return false;
         }
     }

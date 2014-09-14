@@ -65,6 +65,8 @@ public:
     void setPosition(const utils::Dim& dim);
     /* set mdp visual params using metadata */
     bool setVisualParams(const MetaData_t &metadata);
+    /* set pipe type RGB/DMA/VG */
+    void setPipeType(const utils::eMdpPipeType& pType);
     /* mdp set overlay/commit changes */
     bool commit();
 
@@ -75,8 +77,6 @@ public:
     /* retrieve crop data */
     utils::Dim getCrop() const;
     utils::Dim getPosition() const;
-    /* Set downscale */
-    void setDownscale(int dscale_factor);
     /* Update the src format based on rotator's dest */
     void updateSrcFormat(const uint32_t& rotDstFormat);
     /* return pipe priority */
@@ -159,6 +159,11 @@ inline bool Ctrl::setVisualParams(const MetaData_t &metadata)
     return true;
 }
 
+inline void Ctrl::setPipeType(const utils::eMdpPipeType& pType)
+{
+    mMdp->setPipeType(pType);
+}
+
 inline void Ctrl::dump() const {
     ALOGE("== Dump Ctrl start ==");
     mMdp->dump();
@@ -204,10 +209,6 @@ inline utils::Dim Ctrl::getCrop() const {
 
 inline utils::Dim Ctrl::getPosition() const {
     return mMdp->getDstRectDim();
-}
-
-inline void Ctrl::setDownscale(int dscale_factor) {
-    mMdp->setDownscale(dscale_factor);
 }
 
 inline uint8_t Ctrl::getPriority() const {
